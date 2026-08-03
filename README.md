@@ -1,97 +1,122 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# AudioClassifier
 
-# Getting Started
+A React Native app that captures **raw PCM audio** through a **custom Java native module** wrapping Android's low-level `android.media.AudioRecord` API. Audio is buffered on a dedicated background thread, exported as playable WAV files, and streamed back to the JavaScript layer in real time to drive a live level meter and waveform.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+React Native alone cannot handle continuous audio buffering — this project demonstrates the native-module bridge that makes it possible.
 
-## Step 1: Start Metro
+---
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+## Why a native module?
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+React Native's JavaScript thread is not suited to real-time audio: `AudioRecord.read()` blocks until a buffer fills, and dropped samples mean corrupted audio. The capture loop therefore lives entirely in Java on its own thread, and only lightweight amplitude values cross the bridge to the UI.
 
-```sh
-# Using npm
-npm start
-
-# OR using Yarn
-yarn start
+```
+┌──────────────────────┐         ┌────────────────────────────────┐
+│  JavaScript (React)  │         │      Java Native Module        │
+│                      │         │                                │
+│  initialize() ───────┼────────▶│  AudioRecord setup             │
+│  start()      ───────┼────────▶│  Capture thread starts         │
+│  stop()       ───────┼────────▶│  Thread joins, WAV written     │
+│                      │         │                                │
+│  onAmplitude  ◀──────┼─────────┤  DeviceEventEmitter (20+/sec)  │
+└──────────────────────┘         └────────────────────────────────┘
+        Promises                          @ReactMethod
 ```
 
-## Step 2: Build and run your app
+---
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
+## Features
 
-### Android
+- **Raw microphone capture** via `android.media.AudioRecord` — 44,100 Hz, mono, 16-bit PCM
+- **Manual buffer management** on a dedicated background thread so the blocking read never stalls the UI
+- **WAV export** — headerless PCM is written to disk, then wrapped with a hand-built 44-byte RIFF header
+- **Live amplitude streaming** from Java to JavaScript via `DeviceEventEmitter`
+- **Real-time waveform and level meter** rendered in React
+- **Promise-based API** so JS can `await` native calls and handle errors idiomatically
 
-```sh
-# Using npm
-npm run android
+---
 
-# OR using Yarn
-yarn android
+## Screenshots
+
+> Replace with your own captures (add them to a `/screenshots` folder).
+
+| Idle | Recording with waveform |
+|---|---|
+| `screenshots/idle.png` | `screenshots/recording.png` |
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| UI | React Native 0.86, TypeScript |
+| Bridge | `ReactContextBaseJavaModule`, `@ReactMethod`, `DeviceEventEmitter` |
+| Audio | Java, `android.media.AudioRecord` |
+| Build | Gradle, Android SDK, JDK 17 |
+
+---
+
+## Project structure
+
+| File | Responsibility |
+|---|---|
+| `App.tsx` | React UI, permission request, native module calls, waveform rendering |
+| `android/.../AudioCaptureModule.java` | Capture engine, buffer loop, WAV writer, event emitter |
+| `android/.../AudioCapturePackage.java` | Registers the module with React Native |
+| `android/.../MainApplication.kt` | Adds the package to the app's package list |
+| `android/app/src/main/AndroidManifest.xml` | Declares `RECORD_AUDIO` |
+
+---
+
+## How the audio pipeline works
+
+1. **Permission** — JS requests `RECORD_AUDIO` through `PermissionsAndroid` before any native call.
+2. **Initialization** — `getMinBufferSize()` returns the framework minimum for the chosen sample rate, channel config, and encoding; the buffer is oversized 4× for headroom.
+3. **Capture** — a background `Thread` loops on `audioRecord.read()`, writing each byte buffer straight to a temporary `.pcm` file.
+4. **Analysis** — each buffer is scanned for peak amplitude by combining little-endian byte pairs into 16-bit samples; the normalized value is emitted to JS.
+5. **Export** — on stop, a `volatile` flag ends the loop, the thread is joined, and the raw PCM is converted to a standard WAV file with a generated header.
+
+---
+
+## Key concepts demonstrated
+
+- **React Native native modules** — exposing Java to JavaScript with `@ReactMethod` and Promises
+- **Bridging real-time data** — pushing high-frequency events to JS without blocking either thread
+- **Digital audio fundamentals** — sample rate, bit depth, channel configuration, PCM encoding
+- **Low-level buffer handling** — sizing from `getMinBufferSize()`, avoiding dropped samples
+- **The WAV container format** — constructing the RIFF/`fmt `/`data` header by hand
+- **Java concurrency on Android** — `volatile` stop flag, clean `Thread.join()` teardown
+
+---
+
+## Build & run
+
+```bash
+npm install
+npx react-native run-android
 ```
 
-### iOS
+Requires Node 22+, JDK 17, the Android SDK, and a **physical device** (emulator microphones are unreliable).
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+Recordings are saved to the app's external files directory and can be retrieved with:
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
+```bash
+adb pull /sdcard/Android/data/com.audioclassifier/files/ .
 ```
 
-Then, and every time you update your native dependencies, run:
+---
 
-```sh
-bundle exec pod install
-```
+## Roadmap
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+- **TensorFlow Lite** on-device audio classification (YAMNet) fed from the existing capture buffers
+- **FFT spectrum analyzer** for frequency-domain visualization
+- **Foreground service** so capture survives backgrounding
+- **SQLite** logging of classification events
+- Move file writing to a separate producer/consumer thread so disk I/O can never delay the audio read
 
-```sh
-# Using npm
-npm run ios
+---
 
-# OR using Yarn
-yarn ios
-```
+## License
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
-
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+MIT
