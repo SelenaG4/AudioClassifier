@@ -41,7 +41,7 @@ React Native alone cannot handle continuous audio buffering. `AudioRecord.read()
 
 | Idle | Recording | Classifying |
 |---|---|---|
-| ![Idle](screenshots/idle.png) | ![Recording](screenshots/recording1.png) | ![Classifying](screenshots/recording2.png) |
+| <img src="screenshots/idle.png" width="240" /> | <img src="screenshots/recording1.png" width="240" /> | <img src="screenshots/recording2.png" width="240" /> |
 
 ---
 
