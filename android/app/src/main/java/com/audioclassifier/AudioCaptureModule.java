@@ -41,6 +41,19 @@ public class AudioCaptureModule extends ReactContextBaseJavaModule {
 
     private File pcmFile;
     private BufferedOutputStream pcmStream;
+    // --- Classification feed ---
+    private static final int TARGET_RATE = 16000;
+    private static final int YAMNET_WINDOW = 15600;
+    private float[] classifierBuffer = new float[YAMNET_WINDOW];
+    private int classifierIndex = 0;
+    private double resampleCounter = 0;
+    private final double resampleStep = (double) TARGET_RATE / SAMPLE_RATE_HZ;
+    private AudioClassifierModule classifierModule;
+    private volatile boolean classifying = false;
+
+    public void setClassifierModule(AudioClassifierModule module) {
+        this.classifierModule = module;
+    }
 
     public AudioCaptureModule(ReactApplicationContext context) {
         super(context);
@@ -135,6 +148,34 @@ public class AudioCaptureModule extends ReactContextBaseJavaModule {
                             if (level > peak) peak = level;
                         }
                         sendAmplitudeToJs(peak / MAX_16BIT);
+                        // Feed the classifier: decimate 44100 -> 16000
+                        if (classifierModule != null) {
+                            for (int i = 0; i + 1 < bytesRead; i += 2) {
+                                short s = (short) ((buffer[i] & 0xFF) | (buffer[i + 1] << 8));
+                                resampleCounter += resampleStep;
+                                if (resampleCounter >= 1.0) {
+                                    resampleCounter -= 1.0;
+                                    if (classifierIndex < YAMNET_WINDOW) {
+                                        classifierBuffer[classifierIndex++] = s / MAX_16BIT;
+                                    }
+                                }
+                            }
+
+                            if (classifierIndex >= YAMNET_WINDOW && !classifying) {
+                                final float[] snapshot = classifierBuffer.clone();
+                                classifierIndex = 0;
+                                classifying = true;
+                                new Thread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        classifierModule.classifyBuffer(snapshot);
+                                        classifying = false;
+                                    }
+                                }).start();
+                                classifierIndex = 0;
+                                resampleCounter = 0;
+                            }
+                        }
                     }
                 }
                 Log.i(TAG, "Capture loop stopped");

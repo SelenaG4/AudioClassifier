@@ -17,6 +17,8 @@ const MAX_BARS = 60;
 
 export default function App() {
   const [isRecording, setIsRecording] = useState(false);
+  const [sound, setSound] = useState('—');
+  const [confidence, setConfidence] = useState(0);
   const [status, setStatus] = useState('Requesting permission…');
   const [amplitude, setAmplitude] = useState(0);
   const [history, setHistory] = useState<number[]>([]);
@@ -43,6 +45,12 @@ export default function App() {
 
       try {
         await AudioCapture.initialize();
+        try {
+          await NativeModules.AudioClassifierModule.initialize();
+          console.log('Classifier loaded');
+        } catch (e: any) {
+        console.log('Classifier failed: ' + e.message);
+      }
         readyRef.current = true;
         setStatus('Ready');
       } catch (e: any) {
@@ -65,6 +73,16 @@ export default function App() {
     });
     return () => sub.remove();
   }, []);
+
+  useEffect(() => {
+    const emitter = new NativeEventEmitter(NativeModules.AudioClassifierModule);
+    const sub = emitter.addListener('onClassification', event => {
+      setSound(event.label ?? '—');
+      setConfidence(event.score ?? 0);
+    });
+    return () => sub.remove();
+  }, []);
+
 
   const onPress = async () => {
     if (!readyRef.current) return;
@@ -105,6 +123,12 @@ export default function App() {
         </Text>
       </TouchableOpacity>
 
+      <Text style={styles.label}>Detected sound</Text>
+      <Text style={styles.sound}>{sound}</Text>
+      <Text style={styles.level}>
+        Confidence: {(confidence * 100).toFixed(0)}%
+      </Text>
+
       <Text style={styles.label}>Waveform</Text>
       <View style={styles.waveform}>
         {history.map((amp, i) => (
@@ -124,6 +148,7 @@ const styles = StyleSheet.create({
   title: {color: '#fff', fontSize: 24, fontWeight: '600', textAlign: 'center', marginTop: 20},
   status: {color: '#aaa', fontSize: 14, textAlign: 'center', marginTop: 12},
   level: {color: '#4CAF50', fontSize: 18, textAlign: 'center', marginTop: 8},
+  sound: {color: '#FFC107', fontSize: 22, fontWeight: '600', textAlign: 'center', marginTop: 4},
   button: {
     backgroundColor: '#2196F3',
     paddingVertical: 14,
