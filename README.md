@@ -38,11 +38,9 @@ React Native's JavaScript thread is not suited to real-time audio: `AudioRecord.
 
 ## Screenshots
 
-> Replace with your own captures (add them to a `/screenshots` folder).
-
-| Idle | Recording with waveform |
-|---|---|
-| `screenshots/idle.png` | `screenshots/recording.png` |
+| Idle | Recording | Saved |
+|---|---|---|
+| ![Idle](screenshots/idle.png) | ![Recording](screenshots/recording1.png) | ![Saved](screenshots/recording2.png) |
 
 ---
 
