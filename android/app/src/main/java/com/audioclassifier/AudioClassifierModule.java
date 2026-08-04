@@ -18,6 +18,10 @@ import org.tensorflow.lite.task.audio.classifier.AudioClassifier;
 import org.tensorflow.lite.task.audio.classifier.Classifications;
 
 import java.util.List;
+import com.facebook.react.bridge.WritableArray;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 
 public class AudioClassifierModule extends ReactContextBaseJavaModule {
 
@@ -55,6 +59,7 @@ public class AudioClassifierModule extends ReactContextBaseJavaModule {
 
     /** Classify a chunk of normalized PCM samples (-1..1). */
     public void classifyBuffer(float[] samples) {
+        Log.i(TAG, "classifyBuffer called, samples=" + samples.length);
         if (classifier == null || tensorAudio == null) return;
 
         try {
@@ -62,17 +67,30 @@ public class AudioClassifierModule extends ReactContextBaseJavaModule {
             List<Classifications> results = classifier.classify(tensorAudio);
             if (results.isEmpty()) return;
 
-            List<Category> categories = results.get(0).getCategories();
+            List<Category> categories = new ArrayList<>(results.get(0).getCategories());
             if (categories.isEmpty()) return;
 
-            Category best = categories.get(0);
-            for (Category c : categories) {
-                if (c.getScore() > best.getScore()) best = c;
+            Collections.sort(categories, new Comparator<Category>() {
+                @Override
+                public int compare(Category a, Category b) {
+                    return Float.compare(b.getScore(), a.getScore());
+                }
+            });
+
+            WritableArray top = Arguments.createArray();
+            int count = Math.min(3, categories.size());
+            for (int i = 0; i < count; i++) {
+                Category c = categories.get(i);
+                WritableMap item = Arguments.createMap();
+                item.putString("label", c.getLabel());
+                item.putDouble("score", c.getScore());
+                top.pushMap(item);
             }
 
             WritableMap params = Arguments.createMap();
-            params.putString("label", best.getLabel());
-            params.putDouble("score", best.getScore());
+            params.putArray("top", top);
+            params.putString("label", categories.get(0).getLabel());
+            params.putDouble("score", categories.get(0).getScore());
 
             reactContext
                     .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)

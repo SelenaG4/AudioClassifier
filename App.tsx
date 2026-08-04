@@ -15,6 +15,8 @@ const {AudioCapture} = NativeModules;
 
 const MAX_BARS = 60;
 
+type Prediction = {label: string; score: number};
+
 export default function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [sound, setSound] = useState('—');
@@ -23,10 +25,11 @@ export default function App() {
   const [amplitude, setAmplitude] = useState(0);
   const [history, setHistory] = useState<number[]>([]);
   const [events, setEvents] = useState<SoundEvent[]>([]);
-  const readyRef = useRef(false);
   const [totalEvents, setTotalEvents] = useState(0);
+  const [topPredictions, setTopPredictions] = useState<Prediction[]>([]);
+  const readyRef = useRef(false);
 
-  // Ask for the mic, then initialize the native recorder
+ // Ask for the mic, then initialize the native recorder
   useEffect(() => {
     async function setup() {
       if (Platform.OS !== 'android') return;
@@ -72,6 +75,7 @@ export default function App() {
   useEffect(() => {
     const emitter = new NativeEventEmitter(AudioCapture);
     const sub = emitter.addListener('onAmplitude', event => {
+
       const amp = event.amplitude ?? 0;
       setAmplitude(amp);
       setHistory(prev => {
@@ -89,6 +93,7 @@ export default function App() {
       const score = event.score ?? 0;
       setSound(label);
       setConfidence(score);
+      setTopPredictions(event.top ?? []);
 
       // Only log reasonably confident detections
       if (score >= 0.3) {
@@ -102,7 +107,6 @@ export default function App() {
     return () => sub.remove();
   }, []);
 
-
   const onPress = async () => {
     if (!readyRef.current) return;
 
@@ -114,6 +118,7 @@ export default function App() {
         setEvents(recent);
         setTotalEvents(getEventCount());
         setAmplitude(0);
+        setTopPredictions([]);          // ← add this line
         setStatus(path ? 'Saved: ' + path.split('/').pop() : 'Stopped');
       } catch (e: any) {
         setStatus('Stop failed: ' + e.message);
@@ -145,11 +150,30 @@ return (
           </Text>
         </TouchableOpacity>
 
-        <Text style={styles.label}>Detected sound</Text>
-        <Text style={styles.sound}>{sound}</Text>
-        <Text style={styles.level}>
-          Confidence: {(confidence * 100).toFixed(0)}%
-        </Text>
+        <Text style={styles.label}>Detected sounds</Text>
+        {topPredictions.length === 0 ? (
+          <Text style={styles.sound}>—</Text>
+        ) : (
+          topPredictions.map((p, i) => (
+            <View key={i} style={styles.predRow}>
+              <Text style={[styles.predLabel, i === 0 && styles.predTop]}>
+                {p.label}
+              </Text>
+              <View style={styles.predBarTrack}>
+                <View
+                  style={[
+                    styles.predBarFill,
+                    {width: `${Math.max(p.score * 100, 1)}%`},
+                    i === 0 && styles.predBarTopFill,
+                  ]}
+                />
+              </View>
+              <Text style={styles.predScore}>
+                {(p.score * 100).toFixed(0)}%
+              </Text>
+            </View>
+          ))
+        )}
 
         <Text style={styles.label}>Waveform</Text>
         <View style={styles.waveform}>
@@ -201,4 +225,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   bar: {flex: 1, backgroundColor: '#4CAF50', marginHorizontal: 1, borderRadius: 1},
+  predRow: {flexDirection: 'row', alignItems: 'center', marginTop: 6},
+  predLabel: {color: '#aaa', fontSize: 14, width: 110},
+  predTop: {color: '#FFC107', fontWeight: '600'},
+  predBarTrack: {
+    flex: 1,
+    height: 10,
+    backgroundColor: '#2A2A2A',
+    borderRadius: 5,
+    overflow: 'hidden',
+  },
+  predBarFill: {height: 10, backgroundColor: '#666', borderRadius: 5},
+  predBarTopFill: {backgroundColor: '#FFC107'},
+  predScore: {color: '#aaa', fontSize: 13, width: 45, textAlign: 'right'},
 });
