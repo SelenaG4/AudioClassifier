@@ -59,8 +59,7 @@ public class AudioClassifierModule extends ReactContextBaseJavaModule {
 
     /** Classify a chunk of normalized PCM samples (-1..1). */
     public void classifyBuffer(float[] samples) {
-        Log.i(TAG, "classifyBuffer called, samples=" + samples.length);
-        if (classifier == null || tensorAudio == null) return;
+            if (classifier == null || tensorAudio == null) return;
 
         try {
             tensorAudio.load(samples);
