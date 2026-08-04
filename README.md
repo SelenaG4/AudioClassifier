@@ -19,7 +19,7 @@ React Native alone cannot handle continuous audio buffering. `AudioRecord.read()
 │  stop()       ───────┼────────▶│  Thread joins, WAV written           │
 │                      │         │                                      │
 │  onAmplitude    ◀────┼─────────┤  Peak level, ~20×/sec                │
-│  onClassification ◀──┼─────────┤  YAMNet label + score, ~1×/sec       │
+│  onClassification ◀──┼─────────┤  Top 3 labels + scores, ~1×/sec      │
 │         │            │         └──────────────────────────────────────┘
 │         ▼            │
 │   SQLite (events)    │
@@ -32,6 +32,7 @@ React Native alone cannot handle continuous audio buffering. `AudioRecord.read()
 
 - **Raw microphone capture** via `android.media.AudioRecord` — 44,100 Hz, mono, 16-bit PCM
 - **On-device sound classification** with YAMNet, covering 521 AudioSet event categories
+- **Top-3 predictions** with confidence bars, exposing the model's runners-up rather than a single guess
 - **Real-time resampling** from 44.1 kHz capture to the 16 kHz the model requires
 - **Non-blocking inference** — classification runs on a separate thread so it never stalls the audio read
 - **Persistent event log** — every confident detection is written to SQLite with a timestamp and survives app restarts
@@ -65,10 +66,10 @@ React Native alone cannot handle continuous audio buffering. `AudioRecord.read()
 
 | File | Responsibility |
 |---|---|
-| `App.tsx` | React UI, permissions, native calls, waveform, classification and event display |
+| `App.tsx` | React UI, permissions, native calls, waveform, predictions and event display |
 | `db.ts` | SQLite schema, inserts, and queries |
 | `android/.../AudioCaptureModule.java` | Capture engine, buffer loop, resampling, WAV writer |
-| `android/.../AudioClassifierModule.java` | TFLite model loading and inference |
+| `android/.../AudioClassifierModule.java` | TFLite model loading, inference, top-N ranking |
 | `android/.../AudioCapturePackage.java` | Registers both modules and wires them together |
 | `android/app/src/main/assets/yamnet.tflite` | The classification model |
 
@@ -81,7 +82,7 @@ React Native alone cannot handle continuous audio buffering. `AudioRecord.read()
 3. **Capture** — a background thread loops on `audioRecord.read()`, writing each buffer straight to a temporary `.pcm` file.
 4. **Amplitude** — each buffer is scanned for peak level by combining little-endian byte pairs into 16-bit samples.
 5. **Resampling** — samples are decimated from 44,100 Hz to 16,000 Hz using a fractional counter, normalized to −1…1, and accumulated into YAMNet's 15,600-sample window (≈0.975 s).
-6. **Inference** — when a full window is ready it is cloned and handed to a worker thread, so the capture loop never waits on the model. The top-scoring label and confidence are emitted to JS.
+6. **Inference** — when a full window is ready it is cloned and handed to a worker thread, so the capture loop never waits on the model. Categories are sorted by score and the top three are emitted to JS as an array.
 7. **Logging** — detections scoring 0.3 or higher are inserted into SQLite with an ISO timestamp, using parameterized queries.
 8. **Export** — on stop, a `volatile` flag ends the loop, the thread is joined, and the PCM is converted to a standard WAV file.
 
@@ -105,7 +106,7 @@ The UI shows the five most recent rows alongside a `COUNT(*)` total, so the head
 ## Key concepts demonstrated
 
 - **React Native native modules** — exposing Java to JavaScript with `@ReactMethod` and Promises
-- **Bridging real-time data** — high-frequency events to JS without blocking either thread
+- **Bridging real-time data** — high-frequency events and structured arrays to JS without blocking either thread
 - **On-device ML** — loading a TFLite model from assets and running inference off the audio thread
 - **Sample-rate conversion** — decimation between capture and model rates
 - **Local persistence** — schema creation, parameterized inserts, and aggregate queries
@@ -135,18 +136,18 @@ adb pull /sdcard/Android/data/com.audioclassifier/files/ .
 ## Notes and limitations
 
 - **SQLite library choice.** `react-native-sqlite-storage` is the long-standing default, but it still declares the retired `jcenter()` repository and fails outright under Gradle 9. `react-native-nitro-sqlite` was used instead: it targets the New Architecture and builds cleanly on the current toolchain.
-- **Classifier accuracy.** YAMNet is a general-purpose AudioSet model. Sustained sounds such as speech, clapping, and music classify confidently; short or ambiguous transients often produce low-confidence or unexpected labels.
-- **Single label.** Only the top prediction is shown. Displaying the top three would better reflect the model's uncertainty.
+- **Classifier accuracy.** YAMNet is a general-purpose AudioSet model. Sustained sounds such as speech, clapping, and engine noise classify confidently; short or ambiguous transients often produce low-confidence labels. Showing the top three makes this uncertainty visible rather than hiding it behind one guess.
 - **Thread separation.** File writing currently happens on the capture thread. A production design would hand buffers to a dedicated writer thread so disk I/O can never delay the audio read.
+- **Logging granularity.** Only the single highest-scoring label is written to the database. Storing all three would allow richer analysis of the event log.
 
 ---
 
 ## Roadmap
 
-- **Top-N predictions** instead of a single label
 - **FFT spectrum analyzer** for frequency-domain visualization
 - **Foreground service** so capture and classification survive backgrounding
 - **Filtering and export** of the event log
+- **Custom model** — fine-tuned YAMNet trained on a domain-specific sound set
 
 ---
 
