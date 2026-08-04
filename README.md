@@ -4,6 +4,8 @@ A React Native app that captures **raw PCM audio** through a **custom Java nativ
 
 Audio never touches the JavaScript thread. Capture, resampling, and inference all run in Java on dedicated threads; only lightweight results cross the bridge to the UI.
 
+A companion notebook in [`ml/`](ml/) documents a separate, offline pipeline that fine-tunes YAMNet on a custom dataset — see [Model training](#model-training) below.
+
 ---
 
 ## Why a native module?
@@ -56,7 +58,8 @@ React Native alone cannot handle continuous audio buffering. `AudioRecord.read()
 | UI | React Native 0.86, TypeScript |
 | Bridge | `ReactContextBaseJavaModule`, `@ReactMethod`, `DeviceEventEmitter` |
 | Audio | Java, `android.media.AudioRecord` |
-| ML | TensorFlow Lite Task Audio 0.4.4, YAMNet |
+| ML (on-device) | TensorFlow Lite Task Audio 0.4.4, YAMNet |
+| ML (training) | Python, TensorFlow, TensorFlow Hub — see [`ml/`](ml/) |
 | Storage | SQLite via `react-native-nitro-sqlite` |
 | Build | Gradle, Android SDK, JDK 17 |
 
@@ -64,14 +67,15 @@ React Native alone cannot handle continuous audio buffering. `AudioRecord.read()
 
 ## Project structure
 
-| File | Responsibility |
+| Path | Responsibility |
 |---|---|
 | `App.tsx` | React UI, permissions, native calls, waveform, predictions and event display |
 | `db.ts` | SQLite schema, inserts, and queries |
 | `android/.../AudioCaptureModule.java` | Capture engine, buffer loop, resampling, WAV writer |
 | `android/.../AudioClassifierModule.java` | TFLite model loading, inference, top-N ranking |
 | `android/.../AudioCapturePackage.java` | Registers both modules and wires them together |
-| `android/app/src/main/assets/yamnet.tflite` | The classification model |
+| `android/app/src/main/assets/yamnet.tflite` | The on-device classification model (stock YAMNet) |
+| `ml/yamnet_esc50_finetuning.ipynb` | Offline training notebook — see below |
 
 ---
 
@@ -88,18 +92,29 @@ React Native alone cannot handle continuous audio buffering. `AudioRecord.read()
 
 ---
 
-## Database schema
+## Model training
 
-```sql
-CREATE TABLE IF NOT EXISTS sound_events (
-  id        INTEGER PRIMARY KEY AUTOINCREMENT,
-  label     TEXT NOT NULL,
-  score     REAL NOT NULL,
-  timestamp TEXT NOT NULL
-);
-```
+<a id="model-training"></a>
 
-The UI shows the five most recent rows alongside a `COUNT(*)` total, so the header reflects everything stored rather than just what fits on screen.
+The app ships with Google's stock YAMNet, chosen because it runs with the high-level TFLite Task Audio library and needs no extra native dependencies. A separate offline pipeline — [`ml/yamnet_esc50_finetuning.ipynb`](ml/yamnet_esc50_finetuning.ipynb) — explores fine-tuning YAMNet on a custom dataset, kept intentionally apart from the production app.
+
+**Dataset:** [ESC-50](https://github.com/karolpiczak/ESC-50) — 2,000 five-second environmental sound clips across 50 classes, split by the dataset's predefined folds to avoid source-recording leakage between train and test.
+
+**Approach:** YAMNet used as a frozen feature extractor (transfer learning), with a dense classifier head trained on its 1024-dimensional embeddings. Training from scratch was not attempted — with 2,000 clips it would overfit badly.
+
+**Result: 88.0% clip-level test accuracy** (73.1% frame-level; random baseline 2%) on a held-out fold.
+
+| Iteration | Frame-level | Clip-level |
+|---|---|---|
+| Baseline (frozen YAMNet, no augmentation) | 63.4% | 85.3% |
+| + extended training (early-stopping patience) | 64.1% | 86.5% |
+| + additional training data (80/20 split) | 64.2% | 87.5% |
+| + batch normalization, label smoothing | 65.2% | 87.5% |
+| + temporal-context windowing (3-frame input) | **73.1%** | **88.0%** |
+
+Techniques applied along the way: waveform-level data augmentation (time shift, additive noise, gain, time-stretch) applied only to training data; batch normalization and label smoothing in the classifier head; and temporal-context windowing, which concatenates three consecutive YAMNet embeddings so the model can disambiguate a frame using its neighbours rather than judging it in isolation — the single largest improvement, since many individual frames of environmental audio are ambiguous out of context.
+
+**Why this model is not deployed in the app.** The combined YAMNet + classifier graph relies on TensorFlow ops with no TFLite-builtin equivalent, so loading it requires the Flex delegate (`SELECT_TF_OPS`), which adds 20–40 MB to the APK and would require dropping from the Task Audio library to the lower-level `Interpreter` API. Given the production app is scoped to on-device inference with the AudioRecord pipeline, and the custom-trained model exists to demonstrate the training methodology itself, the two are kept separate rather than coupled.
 
 ---
 
@@ -113,6 +128,7 @@ The UI shows the five most recent rows alongside a `COUNT(*)` total, so the head
 - **Digital audio fundamentals** — sample rate, bit depth, channel config, PCM encoding
 - **The WAV container format** — building the RIFF/`fmt `/`data` header by hand
 - **Java concurrency** — `volatile` flags, `Thread.join()`, worker threads for inference
+- **Transfer learning and model evaluation** — frozen-feature extraction, fold-based splitting, frame- vs. clip-level metrics, and a documented iterative improvement process (see `ml/`)
 
 ---
 
@@ -131,14 +147,17 @@ Recordings can be retrieved with:
 adb pull /sdcard/Android/data/com.audioclassifier/files/ .
 ```
 
+The training notebook is self-contained and runs on Google Colab — no local Python setup needed. Open `ml/yamnet_esc50_finetuning.ipynb` there and run all cells.
+
 ---
 
 ## Notes and limitations
 
 - **SQLite library choice.** `react-native-sqlite-storage` is the long-standing default, but it still declares the retired `jcenter()` repository and fails outright under Gradle 9. `react-native-nitro-sqlite` was used instead: it targets the New Architecture and builds cleanly on the current toolchain.
-- **Classifier accuracy.** YAMNet is a general-purpose AudioSet model. Sustained sounds such as speech, clapping, and engine noise classify confidently; short or ambiguous transients often produce low-confidence labels. Showing the top three makes this uncertainty visible rather than hiding it behind one guess.
+- **Classifier accuracy (on-device).** Stock YAMNet is a general-purpose AudioSet model. Sustained sounds such as speech, clapping, and engine noise classify confidently; short or ambiguous transients often produce low-confidence labels. Showing the top three makes this uncertainty visible rather than hiding it behind one guess.
 - **Thread separation.** File writing currently happens on the capture thread. A production design would hand buffers to a dedicated writer thread so disk I/O can never delay the audio read.
 - **Logging granularity.** Only the single highest-scoring label is written to the database. Storing all three would allow richer analysis of the event log.
+- **Fine-tuned model accuracy.** 88% clip-level on full 50-class ESC-50 is within the range of published YAMNet-transfer results, but full end-to-end fine-tuning or model ensembling would likely push it higher at the cost of significantly more training time and, for an ensemble, multiple models to maintain.
 
 ---
 
@@ -147,7 +166,7 @@ adb pull /sdcard/Android/data/com.audioclassifier/files/ .
 - **FFT spectrum analyzer** for frequency-domain visualization
 - **Foreground service** so capture and classification survive backgrounding
 - **Filtering and export** of the event log
-- **Custom model** — fine-tuned YAMNet trained on a domain-specific sound set
+- **Knowledge distillation** of the fine-tuned model into a single deployable network, as a path to using the custom model on-device without the Flex delegate overhead
 
 ---
 
