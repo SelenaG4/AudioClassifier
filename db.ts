@@ -22,6 +22,7 @@ export function initDatabase(): void {
   console.log('Database ready');
 }
 
+// --- Create ---
 export function logEvent(label: string, score: number): void {
   if (!db) return;
   db.execute(
@@ -30,6 +31,7 @@ export function logEvent(label: string, score: number): void {
   );
 }
 
+// --- Read ---
 export function getRecentEvents(limit = 20): SoundEvent[] {
   if (!db) return [];
   const result = db.execute(
@@ -39,14 +41,26 @@ export function getRecentEvents(limit = 20): SoundEvent[] {
   return (result.rows?._array ?? []) as SoundEvent[];
 }
 
-export function clearEvents(): void {
-  if (!db) return;
-  db.execute('DELETE FROM sound_events;');
-}
-/** Total number of logged events, regardless of the display limit. */
 export function getEventCount(): number {
   if (!db) return 0;
   const result = db.execute('SELECT COUNT(*) AS total FROM sound_events;');
   const row = result.rows?._array?.[0] as {total: number} | undefined;
   return row?.total ?? 0;
+}
+
+// --- Update ---
+export function updateEventLabel(id: number, newLabel: string): void {
+  if (!db) return;
+  db.execute('UPDATE sound_events SET label = ? WHERE id = ?;', [newLabel, id]);
+}
+
+// --- Delete ---
+export function deleteEvent(id: number): void {
+  if (!db) return;
+  db.execute('DELETE FROM sound_events WHERE id = ?;', [id]);
+}
+
+export function clearEvents(): void {
+  if (!db) return;
+  db.execute('DELETE FROM sound_events;');
 }

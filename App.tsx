@@ -1,12 +1,24 @@
-import {initDatabase, logEvent, getRecentEvents, getEventCount, SoundEvent, clearEvents} from './db';
+import {
+  initDatabase,
+  logEvent,
+  getRecentEvents,
+  getEventCount,
+  updateEventLabel,
+  deleteEvent,
+  clearEvents,
+  SoundEvent,
+} from './db';
 import React, {useEffect, useState, useRef} from 'react';
 import {
+  Alert,
+  Modal,
   NativeModules,
   NativeEventEmitter,
   PermissionsAndroid,
   Platform,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -27,15 +39,23 @@ export default function App() {
   const [events, setEvents] = useState<SoundEvent[]>([]);
   const [totalEvents, setTotalEvents] = useState(0);
   const [topPredictions, setTopPredictions] = useState<Prediction[]>([]);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editLabelText, setEditLabelText] = useState('');
   const readyRef = useRef(false);
 
- // Ask for the mic, then initialize the native recorder
+  const refreshEvents = () => {
+    setEvents(getRecentEvents());
+    setTotalEvents(getEventCount());
+  };
+
+  // Ask for the mic, then initialize the native recorder
   useEffect(() => {
     async function setup() {
       if (Platform.OS !== 'android') return;
-      
+
       try {
         initDatabase();
+        refreshEvents(); // show persisted history immediately on launch
       } catch (e: any) {
         console.log('DB init failed: ' + e.message);
       }
@@ -60,8 +80,8 @@ export default function App() {
           await NativeModules.AudioClassifierModule.initialize();
           console.log('Classifier loaded');
         } catch (e: any) {
-        console.log('Classifier failed: ' + e.message);
-      }
+          console.log('Classifier failed: ' + e.message);
+        }
         readyRef.current = true;
         setStatus('Ready');
       } catch (e: any) {
@@ -75,7 +95,6 @@ export default function App() {
   useEffect(() => {
     const emitter = new NativeEventEmitter(AudioCapture);
     const sub = emitter.addListener('onAmplitude', event => {
-
       const amp = event.amplitude ?? 0;
       setAmplitude(amp);
       setHistory(prev => {
@@ -114,11 +133,9 @@ export default function App() {
       try {
         const path = await AudioCapture.stop();
         setIsRecording(false);
-        const recent = getRecentEvents();
-        setEvents(recent);
-        setTotalEvents(getEventCount());
+        refreshEvents();
         setAmplitude(0);
-        setTopPredictions([]);          // ← add this line
+        setTopPredictions([]);
         setStatus(path ? 'Saved: ' + path.split('/').pop() : 'Stopped');
       } catch (e: any) {
         setStatus('Stop failed: ' + e.message);
@@ -135,7 +152,63 @@ export default function App() {
     }
   };
 
-return (
+  // --- Update ---
+  const openEditModal = (event: SoundEvent) => {
+    setEditingId(event.id);
+    setEditLabelText(event.label);
+  };
+
+  const closeEditModal = () => {
+    setEditingId(null);
+    setEditLabelText('');
+  };
+
+  const saveEdit = () => {
+    if (editingId === null) return;
+    const trimmed = editLabelText.trim();
+    if (trimmed.length === 0) return;
+    try {
+      updateEventLabel(editingId, trimmed);
+      refreshEvents();
+    } catch (e: any) {
+      console.log('Update failed: ' + e.message);
+    }
+    closeEditModal();
+  };
+
+  // --- Delete ---
+  const handleDelete = (id: number) => {
+    try {
+      deleteEvent(id);
+      refreshEvents();
+    } catch (e: any) {
+      console.log('Delete failed: ' + e.message);
+    }
+  };
+
+  const handleClearAll = () => {
+    Alert.alert(
+      'Clear all history?',
+      'This deletes every logged detection. This cannot be undone.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Clear all',
+          style: 'destructive',
+          onPress: () => {
+            try {
+              clearEvents();
+              refreshEvents();
+            } catch (e: any) {
+              console.log('Clear failed: ' + e.message);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.container}>
         <Text style={styles.title}>Raw Audio Recorder</Text>
@@ -187,11 +260,59 @@ return (
 
         <Text style={styles.label}>Recent detections ({totalEvents} total)</Text>
         {events.slice(0, 5).map(e => (
-          <Text key={e.id} style={styles.eventRow}>
-            {new Date(e.timestamp).toLocaleTimeString()} — {e.label} (
-            {(e.score * 100).toFixed(0)}%)
-          </Text>
+          <View key={e.id} style={styles.eventRow}>
+            <Text style={styles.eventText}>
+              {new Date(e.timestamp).toLocaleTimeString()} — {e.label} (
+              {(e.score * 100).toFixed(0)}%)
+            </Text>
+            <View style={styles.eventActions}>
+              <TouchableOpacity onPress={() => openEditModal(e)} hitSlop={8}>
+                <Text style={styles.actionIcon}>✎</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => handleDelete(e.id)} hitSlop={8}>
+                <Text style={styles.actionIcon}>🗑</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         ))}
+
+        {totalEvents > 0 && (
+          <TouchableOpacity style={styles.clearButton} onPress={handleClearAll}>
+            <Text style={styles.clearButtonText}>Clear all history</Text>
+          </TouchableOpacity>
+        )}
+
+        <Modal
+          visible={editingId !== null}
+          transparent
+          animationType="fade"
+          onRequestClose={closeEditModal}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Correct label</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={editLabelText}
+                onChangeText={setEditLabelText}
+                placeholder="Label"
+                placeholderTextColor="#666"
+                autoFocus
+              />
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={styles.modalButtonCancel}
+                  onPress={closeEditModal}>
+                  <Text style={styles.modalButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.modalButtonSave}
+                  onPress={saveEdit}>
+                  <Text style={styles.modalButtonText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -203,7 +324,6 @@ const styles = StyleSheet.create({
   status: {color: '#aaa', fontSize: 14, textAlign: 'center', marginTop: 12},
   level: {color: '#4CAF50', fontSize: 18, textAlign: 'center', marginTop: 8},
   sound: {color: '#FFC107', fontSize: 22, fontWeight: '600', textAlign: 'center', marginTop: 4},
-  eventRow: {color: '#ccc', fontSize: 13, textAlign: 'center', marginTop: 2},
   button: {
     backgroundColor: '#2196F3',
     paddingVertical: 14,
@@ -238,4 +358,56 @@ const styles = StyleSheet.create({
   predBarFill: {height: 10, backgroundColor: '#666', borderRadius: 5},
   predBarTopFill: {backgroundColor: '#FFC107'},
   predScore: {color: '#aaa', fontSize: 13, width: 45, textAlign: 'right'},
+  eventRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+    paddingVertical: 2,
+  },
+  eventText: {color: '#ccc', fontSize: 12, flex: 1},
+  eventActions: {flexDirection: 'row', gap: 12, marginLeft: 8},
+  actionIcon: {fontSize: 14, color: '#8B96A8'},
+  clearButton: {
+    marginTop: 16,
+    alignSelf: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  clearButtonText: {color: '#E53935', fontSize: 12, fontWeight: '600'},
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalCard: {
+    backgroundColor: '#1E1E1E',
+    borderRadius: 12,
+    padding: 20,
+    width: '80%',
+  },
+  modalTitle: {color: '#fff', fontSize: 16, fontWeight: '600', marginBottom: 12},
+  modalInput: {
+    backgroundColor: '#2A2A2A',
+    color: '#fff',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: 16,
+    gap: 12,
+  },
+  modalButtonCancel: {paddingVertical: 8, paddingHorizontal: 14},
+  modalButtonSave: {
+    backgroundColor: '#2196F3',
+    borderRadius: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+  },
+  modalButtonText: {color: '#fff', fontSize: 14, fontWeight: '600'},
 });
